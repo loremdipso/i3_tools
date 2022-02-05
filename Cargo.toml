@@ -1,0 +1,12 @@
+[package]
+name = "i3_tools"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+i3ipc = "0.10.1"
+log = "0.4.14"
+simple-logging = "2.0.2"
+structopt = "0.3.26"
