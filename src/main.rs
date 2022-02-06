@@ -1,7 +1,7 @@
 extern crate i3ipc;
 use i3ipc::{reply::Workspace, I3Connection};
 use log::LevelFilter;
-use log::{error, info, trace, warn};
+use log::{error, info, trace};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
