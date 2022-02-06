@@ -98,7 +98,6 @@ impl Helper {
 		let mut connection = I3Connection::connect().unwrap();
 
 		let workspaces = Self::get_workspaces(&mut connection);
-
 		let monitor_map = Self::get_workspace_map(&workspaces);
 
 		Some(Self {
@@ -110,12 +109,12 @@ impl Helper {
 	}
 
 	pub fn run(&mut self) {
-		if self.options.collapse {
-			info!("Collapsing...");
-			self.do_collapse();
-		}
+		// TODO: re-enable when it works
+		// if self.options.collapse {
+		// 	self.do_collapse();
+		// 	return;
+		// }
 
-		// NOTE: I don't bother updating the workspace state after this point
 		if let Some(mut target) = self.get_target_workspace_id() {
 			let mut source = self.get_current_workspace().unwrap().borrow().num;
 			if target < 0 {
@@ -250,12 +249,32 @@ impl Helper {
 	}
 
 	fn do_collapse(&self) {
-		let mut index = 0;
-		for (_, workspaces) in self.monitor_map.iter() {
-			for workspace in workspaces {
-				self.swap_workspaces(workspace.borrow().num, index);
+		// want to do the fewest number of swaps. How? Hanoi?
+		// Or do the lazy thing and set twice. Hmmm...
+
+		// first set: move all workspaces to temporary space up above
+		{
+			let mut index = self.get_max_workspace_id() + 1;
+			for workspace in &self.workspaces {
+				self.move_workspace(workspace.borrow().num, index);
 				workspace.borrow_mut().num = index;
 				index += 1;
+			}
+		}
+
+		// second set: put back into right places
+		{
+			// sort the monitor keys first to guarantee sort order
+			let mut index = 0;
+			let mut keys = self.monitor_map.keys().collect::<Vec<&String>>();
+			keys.sort();
+			for key in keys.iter() {
+				let workspaces = self.monitor_map.get(*key).unwrap();
+				for workspace in workspaces.iter() {
+					self.move_workspace(workspace.borrow().num, index);
+					workspace.borrow_mut().num = index;
+					index += 1;
+				}
 			}
 		}
 	}
@@ -299,8 +318,19 @@ impl Helper {
 	}
 
 	fn get_unique_workspace_id(&self) -> i32 {
-		// already sorted. Added an arbitary margin to trying and avoid race conditions
-		return self.workspaces.last().unwrap().borrow().num + 10;
+		return self.get_max_workspace_id() + 1;
+	}
+
+	fn get_max_workspace_id(&self) -> i32 {
+		// can't depend on this already being sorted. Added an arbitary margin to trying and avoid race conditions
+		let mut max = -1;
+		for workspace in &self.workspaces {
+			let value = workspace.borrow().num;
+			if value > max {
+				max = value;
+			}
+		}
+		return max;
 	}
 
 	fn move_workspace(&self, source: i32, target: i32) {
@@ -319,6 +349,7 @@ impl Helper {
 	}
 
 	fn run_command(&self, command: &str) {
+		trace!("i3 command: {}", command);
 		self.connection.borrow_mut().run_command(command).unwrap();
 	}
 }
