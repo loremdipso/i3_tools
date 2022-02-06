@@ -126,9 +126,6 @@ impl Helper {
 			if target < 0 {
 				info!("Target is < 0. Shifting all workspaces over one");
 				self.make_room_for_zero();
-				// reset workspaces
-				self.workspaces = Self::get_workspaces(&mut self.connection.borrow_mut());
-				self.map = Self::get_workspace_map(&self.workspaces);
 				source = self.get_current_workspace().unwrap().borrow().num;
 				target = 0;
 			}
