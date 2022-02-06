@@ -1,7 +1,7 @@
 extern crate i3ipc;
 use i3ipc::{reply::Workspace, I3Connection};
 use log::LevelFilter;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -30,6 +30,10 @@ struct Opt {
 	#[structopt(long)]
 	end: bool,
 
+	/// Re-order all existing workspaces, starting at 0. Maintains relative positions
+	#[structopt(long)]
+	collapse: bool,
+
 	/// Prepend to the start
 	#[structopt(long)]
 	start: bool,
@@ -53,7 +57,7 @@ struct Helper {
 	options: Opt,
 	workspaces: Vec<Rc<RefCell<Workspace>>>,
 	connection: RefCell<I3Connection>,
-	map: HashMap<String, Vec<Rc<RefCell<Workspace>>>>,
+	monitor_map: HashMap<String, Vec<Rc<RefCell<Workspace>>>>,
 }
 
 impl Helper {
@@ -61,9 +65,9 @@ impl Helper {
 		let options = Opt::from_args();
 
 		if options.verbose {
-			simple_logging::log_to_stderr(LevelFilter::Info);
+			simple_logging::log_to_stderr(LevelFilter::Trace);
 		} else {
-			simple_logging::log_to_stderr(LevelFilter::Error);
+			simple_logging::log_to_stderr(LevelFilter::Info);
 		}
 
 		let mut direction_count = 0;
@@ -85,7 +89,7 @@ impl Helper {
 			return None;
 		}
 
-		if direction_count == 0 && !options.monitor {
+		if direction_count == 0 && !options.monitor && !options.collapse {
 			error!("Must select either 'next', 'previous', 'start', or 'end'");
 			return None;
 		}
@@ -95,14 +99,48 @@ impl Helper {
 
 		let workspaces = Self::get_workspaces(&mut connection);
 
-		let map = Self::get_workspace_map(&workspaces);
+		let monitor_map = Self::get_workspace_map(&workspaces);
 
 		Some(Self {
 			options,
 			workspaces,
 			connection: RefCell::new(connection),
-			map,
+			monitor_map,
 		})
+	}
+
+	pub fn run(&mut self) {
+		if let Some(mut target) = self.get_target_workspace_id() {
+			let mut source = self.get_current_workspace().unwrap().borrow().num;
+			if target < 0 {
+				trace!("Target is < 0. Shifting all workspaces over one");
+				self.make_room_for_zero();
+				source = self.get_current_workspace().unwrap().borrow().num;
+				target = 0;
+			}
+			trace!("Current workspace id: {}", source);
+			trace!("Target workspace id: {}", target);
+
+			if self.options.window {
+				self.move_window_to_workspace(target);
+				self.focus_workspace(target);
+			} else if self.options.workspace {
+				if self.options.monitor {
+					panic!(
+						"You can do this with a simple 'move workspace to output right', so this isn't necessary"
+					);
+				} else {
+					self.swap_workspaces(source, target);
+				}
+			} else {
+				self.focus_workspace(target);
+			}
+		}
+
+		if self.options.collapse {
+			info!("Collapsing...");
+			self.do_collapse();
+		}
 	}
 
 	fn get_workspaces(connection: &mut I3Connection) -> Vec<Rc<RefCell<Workspace>>> {
@@ -120,98 +158,18 @@ impl Helper {
 		return workspaces;
 	}
 
-	pub fn run(&mut self) {
-		if let Some(mut target) = self.get_target_workspace_id() {
-			let mut source = self.get_current_workspace().unwrap().borrow().num;
-			if target < 0 {
-				info!("Target is < 0. Shifting all workspaces over one");
-				self.make_room_for_zero();
-				source = self.get_current_workspace().unwrap().borrow().num;
-				target = 0;
-			}
-			info!("Current workspace id: {}", source);
-			info!("Target workspace id: {}", target);
-
-			if self.options.window {
-				self.move_window_to_workspace(target);
-				self.focus_workspace(target);
-			} else if self.options.workspace {
-				if self.options.monitor {
-					panic!(
-						"You can do with 'move workspace to output right', so this isn't necessary"
-					);
-				} else {
-					self.swap_workspaces(source, target);
-				}
-			} else {
-				self.focus_workspace(target);
-			}
-		} else {
-			info!("Nothing to do");
+	// will return a sorted map of workspaces keyed off of monitor
+	fn get_workspace_map(
+		workspaces: &Vec<Rc<RefCell<Workspace>>>,
+	) -> HashMap<String, Vec<Rc<RefCell<Workspace>>>> {
+		let mut monitor_map: HashMap<String, Vec<Rc<RefCell<Workspace>>>> = HashMap::new();
+		for workspace in workspaces {
+			monitor_map
+				.entry(workspace.borrow().output.to_string())
+				.or_default()
+				.push(workspace.clone());
 		}
-	}
-
-	fn run_command(&self, command: &str) {
-		self.connection.borrow_mut().run_command(command).unwrap();
-	}
-
-	fn make_room_for_zero(&mut self) {
-		for monitor_workspaces in self.map.values_mut() {
-			if monitor_workspaces
-				.iter()
-				.find(|workspace| workspace.borrow().num == 0)
-				.is_none()
-			{
-				continue;
-			}
-
-			let mut next = monitor_workspaces.last().unwrap().borrow().num + 1;
-			for workspace in monitor_workspaces.iter_mut().rev() {
-				// TODO: why doesn't this work?
-				// self.move_workspace(workspace.num, next);
-
-				self.connection
-					.borrow_mut()
-					.run_command(&format!(
-						"rename workspace \"{}\" to \"{}\"",
-						workspace.borrow().num,
-						next
-					))
-					.unwrap();
-
-				let temp = next;
-				next = workspace.borrow().num;
-				workspace.borrow_mut().num = temp;
-			}
-		}
-	}
-
-	fn focus_workspace(&self, id: i32) {
-		self.run_command(&format!("workspace {}", id));
-	}
-
-	fn move_window_to_workspace(&self, id: i32) {
-		self.run_command(&format!("move container to workspace \"{}\"", id));
-	}
-
-	fn swap_workspaces(&self, source: i32, target: i32) {
-		let unique_workspace_id = self.get_unique_workspace_id();
-		dbg!(unique_workspace_id);
-		self.move_workspace(target, unique_workspace_id);
-		self.move_workspace(source, target);
-		self.move_workspace(unique_workspace_id, source);
-	}
-
-	fn get_unique_workspace_id(&self) -> i32 {
-		// already sorted. Added an arbitary margin to trying and avoid race conditions
-		return self.workspaces.last().unwrap().borrow().num + 10;
-	}
-
-	fn move_workspace(&self, source: i32, target: i32) {
-		self.run_command(&format!(
-			"rename workspace \"{}\" to \"{}\"",
-			source, target
-		));
+		return monitor_map;
 	}
 
 	fn get_target_workspace_id(&self) -> Option<i32> {
@@ -231,7 +189,7 @@ impl Helper {
 		if self.options.monitor {
 			// TODO: make this less dumb. This just finds the first non-current workspace.
 			// Won't work on 3 or more
-			for (output, monitor) in self.map.iter() {
+			for (output, monitor) in self.monitor_map.iter() {
 				if output != &current_workspace.borrow().output {
 					for workspace in monitor.iter() {
 						if workspace.borrow().visible {
@@ -241,8 +199,10 @@ impl Helper {
 				}
 			}
 		} else {
-			let current_monitor_workspaces =
-				self.map.get(&*current_workspace.borrow().output).unwrap();
+			let current_monitor_workspaces = self
+				.monitor_map
+				.get(&*current_workspace.borrow().output)
+				.unwrap();
 
 			if self.options.next {
 				for (index, workspace) in current_monitor_workspaces.iter().enumerate() {
@@ -288,16 +248,76 @@ impl Helper {
 		}
 	}
 
-	// will return a sorted map of workspaces keyed off of monitor
-	fn get_workspace_map(
-		workspaces: &Vec<Rc<RefCell<Workspace>>>,
-	) -> HashMap<String, Vec<Rc<RefCell<Workspace>>>> {
-		let mut map: HashMap<String, Vec<Rc<RefCell<Workspace>>>> = HashMap::new();
-		for workspace in workspaces {
-			map.entry(workspace.borrow().output.to_string())
-				.or_default()
-				.push(workspace.clone());
+	fn do_collapse(&self) {
+		let mut index = 0;
+		for (_, workspaces) in self.monitor_map.iter() {
+			for workspace in workspaces {
+				self.swap_workspaces(workspace.borrow().num, index);
+				workspace.borrow_mut().num = index;
+				index += 1;
+			}
 		}
-		return map;
+	}
+
+	fn make_room_for_zero(&self) {
+		for monitor_workspaces in self.monitor_map.values() {
+			if monitor_workspaces
+				.iter()
+				.find(|workspace| workspace.borrow().num == 0)
+				.is_none()
+			{
+				continue;
+			}
+
+			let mut next = monitor_workspaces.last().unwrap().borrow().num + 1;
+			for workspace in monitor_workspaces.iter().rev() {
+				// TODO: why doesn't this work?
+				// self.move_workspace(workspace.num, next);
+
+				self.connection
+					.borrow_mut()
+					.run_command(&format!(
+						"rename workspace \"{}\" to \"{}\"",
+						workspace.borrow().num,
+						next
+					))
+					.unwrap();
+
+				let temp = next;
+				next = workspace.borrow().num;
+				workspace.borrow_mut().num = temp;
+			}
+		}
+	}
+
+	fn swap_workspaces(&self, source: i32, target: i32) {
+		let unique_workspace_id = self.get_unique_workspace_id();
+		self.move_workspace(target, unique_workspace_id);
+		self.move_workspace(source, target);
+		self.move_workspace(unique_workspace_id, source);
+	}
+
+	fn get_unique_workspace_id(&self) -> i32 {
+		// already sorted. Added an arbitary margin to trying and avoid race conditions
+		return self.workspaces.last().unwrap().borrow().num + 10;
+	}
+
+	fn move_workspace(&self, source: i32, target: i32) {
+		self.run_command(&format!(
+			"rename workspace \"{}\" to \"{}\"",
+			source, target
+		));
+	}
+
+	fn focus_workspace(&self, id: i32) {
+		self.run_command(&format!("workspace {}", id));
+	}
+
+	fn move_window_to_workspace(&self, id: i32) {
+		self.run_command(&format!("move container to workspace \"{}\"", id));
+	}
+
+	fn run_command(&self, command: &str) {
+		self.connection.borrow_mut().run_command(command).unwrap();
 	}
 }
