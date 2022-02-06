@@ -110,6 +110,12 @@ impl Helper {
 	}
 
 	pub fn run(&mut self) {
+		if self.options.collapse {
+			info!("Collapsing...");
+			self.do_collapse();
+		}
+
+		// NOTE: I don't bother updating the workspace state after this point
 		if let Some(mut target) = self.get_target_workspace_id() {
 			let mut source = self.get_current_workspace().unwrap().borrow().num;
 			if target < 0 {
@@ -135,11 +141,6 @@ impl Helper {
 			} else {
 				self.focus_workspace(target);
 			}
-		}
-
-		if self.options.collapse {
-			info!("Collapsing...");
-			self.do_collapse();
 		}
 	}
 
