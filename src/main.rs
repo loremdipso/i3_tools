@@ -4,6 +4,7 @@ use log::LevelFilter;
 use log::{error, info, warn};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -50,9 +51,9 @@ fn main() {
 
 struct Helper {
 	options: Opt,
-	workspaces: Vec<SimpleWorkspace>,
+	workspaces: Vec<Rc<RefCell<Workspace>>>,
 	connection: RefCell<I3Connection>,
-	map: HashMap<String, Vec<SimpleWorkspace>>,
+	map: HashMap<String, Vec<Rc<RefCell<Workspace>>>>,
 }
 
 impl Helper {
@@ -104,31 +105,31 @@ impl Helper {
 		})
 	}
 
-	fn get_workspaces(connection: &mut I3Connection) -> Vec<SimpleWorkspace> {
+	fn get_workspaces(connection: &mut I3Connection) -> Vec<Rc<RefCell<Workspace>>> {
 		let mut workspaces = connection
 			.get_workspaces()
 			.unwrap()
 			.workspaces
-			.iter()
-			.map(|workspace| SimpleWorkspace::new(workspace))
-			.collect::<Vec<SimpleWorkspace>>();
+			.drain(..)
+			.map(|workspace| Rc::new(RefCell::new(workspace)))
+			.collect::<Vec<Rc<RefCell<Workspace>>>>();
 
 		// NOTE: is this sorting even necessary?
-		workspaces.sort_by(|a, b| a.num.partial_cmp(&b.num).unwrap());
+		workspaces.sort_by(|a, b| a.borrow().num.partial_cmp(&b.borrow().num).unwrap());
 
 		return workspaces;
 	}
 
 	pub fn run(&mut self) {
 		if let Some(mut target) = self.get_target_workspace_id() {
-			let mut source = self.get_current_workspace().unwrap().num;
+			let mut source = self.get_current_workspace().unwrap().borrow().num;
 			if target < 0 {
 				info!("Target is < 0. Shifting all workspaces over one");
 				self.make_room_for_zero();
 				// reset workspaces
 				self.workspaces = Self::get_workspaces(&mut self.connection.borrow_mut());
 				self.map = Self::get_workspace_map(&self.workspaces);
-				source = self.get_current_workspace().unwrap().num;
+				source = self.get_current_workspace().unwrap().borrow().num;
 				target = 0;
 			}
 			info!("Current workspace id: {}", source);
@@ -139,8 +140,9 @@ impl Helper {
 				self.focus_workspace(target);
 			} else if self.options.workspace {
 				if self.options.monitor {
-					todo!();
-				// self.move_window_to_output(target);
+					panic!(
+						"You can do with 'move workspace to output right', so this isn't necessary"
+					);
 				} else {
 					self.swap_workspaces(source, target);
 				}
@@ -160,13 +162,13 @@ impl Helper {
 		for monitor_workspaces in self.map.values_mut() {
 			if monitor_workspaces
 				.iter()
-				.find(|workspace| workspace.num == 0)
+				.find(|workspace| workspace.borrow().num == 0)
 				.is_none()
 			{
 				continue;
 			}
 
-			let mut next = monitor_workspaces.last().unwrap().num + 1;
+			let mut next = monitor_workspaces.last().unwrap().borrow().num + 1;
 			for workspace in monitor_workspaces.iter_mut().rev() {
 				// TODO: why doesn't this work?
 				// self.move_workspace(workspace.num, next);
@@ -175,13 +177,14 @@ impl Helper {
 					.borrow_mut()
 					.run_command(&format!(
 						"rename workspace \"{}\" to \"{}\"",
-						workspace.num, next
+						workspace.borrow().num,
+						next
 					))
 					.unwrap();
 
 				let temp = next;
-				next = workspace.num;
-				workspace.num = temp;
+				next = workspace.borrow().num;
+				workspace.borrow_mut().num = temp;
 			}
 		}
 	}
@@ -194,17 +197,6 @@ impl Helper {
 		self.run_command(&format!("move container to workspace \"{}\"", id));
 	}
 
-	fn move_window_to_output(&self, target: i32) {
-		todo!();
-		// let current_workspace = self.get_current_workspace().unwrap();
-
-		// for output in self.map.keys() {
-		// 	if output != &current_workspace.output {
-		// 		self.run_command(&format!("move window to output \"{}\"", output));
-		// 	}
-		// }
-	}
-
 	fn swap_workspaces(&self, source: i32, target: i32) {
 		let unique_workspace_id = self.get_unique_workspace_id();
 		dbg!(unique_workspace_id);
@@ -215,7 +207,7 @@ impl Helper {
 
 	fn get_unique_workspace_id(&self) -> i32 {
 		// already sorted. Added an arbitary margin to trying and avoid race conditions
-		return self.workspaces.last().unwrap().num + 10;
+		return self.workspaces.last().unwrap().borrow().num + 10;
 	}
 
 	fn move_workspace(&self, source: i32, target: i32) {
@@ -229,61 +221,69 @@ impl Helper {
 		let current_workspace = self.get_current_workspace().unwrap();
 
 		if self.options.end {
-			return Some(self.workspaces.last().unwrap().num + 1);
+			return Some(self.workspaces.last().unwrap().borrow().num + 1);
 		} else if self.options.start {
 			let first_workspace = self.workspaces.first().unwrap();
-			if first_workspace.focused {
+			if first_workspace.borrow().focused {
 				// we're already the first, so we don't do anything here
 				return None;
 			}
-			return Some(first_workspace.num - 1);
+			return Some(first_workspace.borrow().num - 1);
 		}
 
 		if self.options.monitor {
 			// TODO: make this less dumb. This just finds the first non-current workspace.
 			// Won't work on 3 or more
 			for (output, monitor) in self.map.iter() {
-				if output != &current_workspace.output {
+				if output != &current_workspace.borrow().output {
 					for workspace in monitor.iter() {
-						if workspace.visible {
-							return Some(workspace.num);
+						if workspace.borrow().visible {
+							return Some(workspace.borrow().num);
 						}
 					}
 				}
 			}
 		} else {
-			let current_monitor_workspaces = self.map.get(&*current_workspace.output).unwrap();
+			let current_monitor_workspaces =
+				self.map.get(&*current_workspace.borrow().output).unwrap();
 
 			if self.options.next {
 				for (index, workspace) in current_monitor_workspaces.iter().enumerate() {
-					if workspace.num == current_workspace.num {
+					if workspace.borrow().num == current_workspace.borrow().num {
 						if index + 1 < current_monitor_workspaces.len() {
-							return Some(current_monitor_workspaces[index + 1].num);
+							return Some(current_monitor_workspaces[index + 1].borrow().num);
 						}
 						break;
 					}
 				}
 				// couldn't find a next, so return the first (if just looking)
-				return Some(current_monitor_workspaces[0].num);
+				return Some(current_monitor_workspaces[0].borrow().num);
 			} else if self.options.previous {
 				for (index, workspace) in current_monitor_workspaces.iter().enumerate() {
-					if workspace.num == current_workspace.num {
+					if workspace.borrow().num == current_workspace.borrow().num {
 						if index > 0 {
-							return Some(current_monitor_workspaces[index - 1].num);
+							return Some(current_monitor_workspaces[index - 1].borrow().num);
 						}
 						break;
 					}
 				}
 				// couldn't find a previous, so return the last
-				return Some(current_monitor_workspaces[current_monitor_workspaces.len() - 1].num);
+				return Some(
+					current_monitor_workspaces[current_monitor_workspaces.len() - 1]
+						.borrow()
+						.num,
+				);
 			}
 		}
 
 		return None;
 	}
 
-	fn get_current_workspace(&self) -> Option<SimpleWorkspace> {
-		let workspace = self.workspaces.iter().find(|workspace| workspace.focused);
+	fn get_current_workspace(&self) -> Option<Rc<RefCell<Workspace>>> {
+		let workspace = self
+			.workspaces
+			.iter()
+			.find(|workspace| workspace.borrow().focused);
 		if let Some(workspace) = workspace {
 			return Some(workspace.clone());
 		} else {
@@ -293,35 +293,14 @@ impl Helper {
 
 	// will return a sorted map of workspaces keyed off of monitor
 	fn get_workspace_map(
-		workspaces: &Vec<SimpleWorkspace>,
-	) -> HashMap<String, Vec<SimpleWorkspace>> {
-		let mut map: HashMap<String, Vec<SimpleWorkspace>> = HashMap::new();
+		workspaces: &Vec<Rc<RefCell<Workspace>>>,
+	) -> HashMap<String, Vec<Rc<RefCell<Workspace>>>> {
+		let mut map: HashMap<String, Vec<Rc<RefCell<Workspace>>>> = HashMap::new();
 		for workspace in workspaces {
-			map.entry(workspace.output.to_string())
+			map.entry(workspace.borrow().output.to_string())
 				.or_default()
 				.push(workspace.clone());
 		}
 		return map;
-	}
-}
-
-#[derive(Debug, Clone)]
-struct SimpleWorkspace {
-	num: i32,
-	name: String,
-	output: String,
-	visible: bool,
-	focused: bool,
-}
-
-impl SimpleWorkspace {
-	pub fn new(workspace: &Workspace) -> Self {
-		Self {
-			num: workspace.num,
-			name: workspace.name.clone(),
-			output: workspace.output.clone(),
-			visible: workspace.visible,
-			focused: workspace.focused,
-		}
 	}
 }
