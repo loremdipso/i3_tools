@@ -263,8 +263,8 @@ impl Helper {
 						break;
 					}
 				}
-			// couldn't find a next, so return the first
-			// return Some(current_monitor_workspaces[0].num);
+				// couldn't find a next, so return the first (if just looking)
+				return Some(current_monitor_workspaces[0].num);
 			} else if self.options.previous {
 				for (index, workspace) in current_monitor_workspaces.iter().enumerate() {
 					if workspace.num == current_workspace.num {
@@ -275,7 +275,7 @@ impl Helper {
 					}
 				}
 				// couldn't find a previous, so return the last
-				// return Some(current_monitor_workspaces[current_monitor_workspaces.len() - 1].num);
+				return Some(current_monitor_workspaces[current_monitor_workspaces.len() - 1].num);
 			}
 		}
 
